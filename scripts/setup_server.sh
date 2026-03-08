@@ -187,7 +187,7 @@ section "5. PostgreSQL 16"
 
 # Add PostgreSQL official repo
 curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | \
-    gpg --dearmor -o /etc/apt/trusted.gpg.d/postgresql.gpg
+    gpg --dearmor | tee /etc/apt/trusted.gpg.d/postgresql.gpg > /dev/null
 
 echo "deb [signed-by=/etc/apt/trusted.gpg.d/postgresql.gpg] \
     https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
@@ -199,6 +199,13 @@ apt-get install -y -qq postgresql-16 postgresql-client-16 postgresql-contrib-16
 # Start PostgreSQL
 systemctl enable postgresql
 systemctl start postgresql
+
+# Wait for PostgreSQL socket to be ready
+for i in $(seq 1 15); do
+    pg_isready -q && break
+    echo "[KAT] Waiting for PostgreSQL ($i/15)..."
+    sleep 2
+done
 
 # ── Create DB user and database ───────────────────────────────────
 sudo -u postgres psql << EOF

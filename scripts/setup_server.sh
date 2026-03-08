@@ -163,12 +163,11 @@ fi
 # ================================================================
 section "4. Python 3.12"
 
-add-apt-repository -y ppa:deadsnakes/ppa
-apt-get update -qq
-apt-get install -y -qq python3.12 python3.12-venv python3.12-dev python3.12-distutils
+# Ubuntu 24.04 ships Python 3.12 natively — no PPA needed, no distutils (removed in 3.12+)
+apt-get install -y -qq python3.12 python3.12-venv python3.12-dev python3-pip
 
-# pip for 3.12
-curl -sS https://bootstrap.pypa.io/get-pip.py | python3.12
+# pip already available via python3-pip
+python3.12 -m pip install --upgrade pip --break-system-packages 2>/dev/null || true
 
 # Virtual environment
 python3.12 -m venv $KAT_HOME/venv

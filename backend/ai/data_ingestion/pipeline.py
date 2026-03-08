@@ -392,7 +392,7 @@ class DataPipeline:
 
     def fetch_bars(self, symbol: str, start: str, end: str, timespan: str = 'day'):
         """Fetch OHLCV bars for a symbol and store in DB."""
-        return self.downloader.fetch(symbol=symbol, start=start, end=end, timespan=timespan)
+        return self.downloader.get_bars(ticker=symbol, from_=start, to=end, timespan=timespan)
 
     def build_dataset(self, symbols: list, start: str, end: str):
         """Build a training DatasetBundle for the given symbols and date range."""

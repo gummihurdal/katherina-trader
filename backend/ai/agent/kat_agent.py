@@ -379,4 +379,46 @@ class AgentPerformanceTracker:
         lines.append("═" * 50)
         lines.append(f"  {'🎓 READY FOR LIVE TRADING' if passed else '📚 STILL IN TRAINING'}")
         lines.append("═" * 50)
-        return "\n".join(lines)
+        return "
+".join(lines)
+
+class KATAgent:
+    """Wrapper class that bundles the PPO model with KAT-specific config."""
+
+    def __init__(self, env, device='cpu'):
+        from stable_baselines3 import PPO
+        self.env = env
+        self.device = device
+        self.tracker = AgentPerformanceTracker()
+        self.model = PPO(
+            KATPolicy,
+            env,
+            verbose=0,
+            device=device,
+            n_steps=2048,
+            batch_size=64,
+            n_epochs=10,
+            gamma=0.99,
+            gae_lambda=0.95,
+            clip_range=0.2,
+            ent_coef=0.01,
+        )
+
+    def learn(self, total_timesteps: int, **kwargs):
+        self.model.learn(total_timesteps=total_timesteps, **kwargs)
+
+    def predict(self, obs, deterministic=True):
+        return self.model.predict(obs, deterministic=deterministic)
+
+    def save(self, path: str):
+        self.model.save(path)
+
+    @classmethod
+    def load(cls, path: str, env):
+        from stable_baselines3 import PPO
+        agent = cls.__new__(cls)
+        agent.env = env
+        agent.tracker = AgentPerformanceTracker()
+        agent.model = PPO.load(path, env=env)
+        return agent
+

@@ -387,8 +387,8 @@ class DataPipeline:
         import os
         self.polygon_key = os.environ.get('POLYGON_API_KEY', '')
         self.db_url = os.environ.get('DATABASE_URL', '')
-        self.downloader = PolygonDownloader(api_key=self.polygon_key)
-        self.builder = DatasetBuilder(db_url=self.db_url)
+        self.downloader = PolygonDownloader(self.polygon_key)
+        self.builder = DatasetBuilder(polygon_key=self.polygon_key)
 
     def fetch_bars(self, symbol: str, start: str, end: str, timespan: str = 'day'):
         """Fetch OHLCV bars for a symbol and store in DB."""

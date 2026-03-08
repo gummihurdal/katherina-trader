@@ -379,8 +379,8 @@ class AgentPerformanceTracker:
         lines.append("═" * 50)
         lines.append(f"  {'🎓 READY FOR LIVE TRADING' if passed else '📚 STILL IN TRAINING'}")
         lines.append("═" * 50)
-        return "
-".join(lines)
+        return "\n".join(lines)
+
 
 class KATAgent:
     """Wrapper class that bundles the PPO model with KAT-specific config."""

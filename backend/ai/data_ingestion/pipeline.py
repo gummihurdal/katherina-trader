@@ -378,3 +378,33 @@ class DatasetBundle:
             f"symbols={self.n_symbols}, "
             f"signals={self.n_signals})"
         )
+
+
+class DataPipeline:
+    """Unified pipeline wrapper — fetches price data and builds training datasets."""
+
+    def __init__(self):
+        import os
+        self.polygon_key = os.environ.get('POLYGON_API_KEY', '')
+        self.db_url = os.environ.get('DATABASE_URL', '')
+        self.downloader = PolygonDownloader(api_key=self.polygon_key)
+        self.builder = DatasetBuilder(db_url=self.db_url)
+
+    def fetch_bars(self, symbol: str, start: str, end: str, timespan: str = 'day'):
+        """Fetch OHLCV bars for a symbol and store in DB."""
+        return self.downloader.fetch(symbol=symbol, start=start, end=end, timespan=timespan)
+
+    def build_dataset(self, symbols: list, start: str, end: str):
+        """Build a training DatasetBundle for the given symbols and date range."""
+        return self.builder.build(symbols=symbols, start=start, end=end)
+
+    def status(self):
+        """Quick connectivity check."""
+        import urllib.request, json as _json
+        url = f'https://api.polygon.io/v2/aggs/ticker/AAPL/range/1/day/2025-01-02/2025-01-03?apiKey={self.polygon_key}'
+        try:
+            r = urllib.request.urlopen(url, timeout=5)
+            d = _json.loads(r.read())
+            return f"Polygon OK — {d.get('status', '?')} | DB: {self.db_url[:30]}..."
+        except Exception as e:
+            return f"Polygon ERROR: {e}"

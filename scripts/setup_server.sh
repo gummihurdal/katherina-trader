@@ -216,25 +216,23 @@ ALTER USER $DB_USER CREATEDB;
 EOF
 
 # ── PostgreSQL config — tuned for EX63 (20 cores, 64GB DDR5) ───────
-# EX63 spec: Intel Core Ultra 7 265 (20 cores), 64GB DDR5, 2x1TB NVMe Gen4
 PG_CONF="/etc/postgresql/16/main/postgresql.conf"
 
-# Backup original
-cp $PG_CONF ${PG_CONF}.orig
-
+# Only append tuning block once
+if ! grep -q "KAT ML Workload Tuning" $PG_CONF; then
 cat >> $PG_CONF << 'EOF'
 
 # ── KAT ML Workload Tuning ─────────────────────────────────────────
 # Server: Hetzner EX63 — 20 cores, 64GB DDR5, 2x1TB NVMe Gen4
 
 # Memory
-shared_buffers          = 16GB          # 25% of RAM
-effective_cache_size    = 48GB          # 75% of RAM
-work_mem                = 128MB         # per sort/hash — lower due to high parallelism
-maintenance_work_mem    = 2GB           # for VACUUM, CREATE INDEX
+shared_buffers          = 16GB
+effective_cache_size    = 48GB
+work_mem                = 128MB
+maintenance_work_mem    = 2GB
 huge_pages              = try
 
-# Parallelism (12 cores available)
+# Parallelism
 max_parallel_workers_per_gather = 8
 max_parallel_workers            = 20
 max_worker_processes            = 24
@@ -245,17 +243,16 @@ checkpoint_completion_target = 0.9
 min_wal_size            = 1GB
 max_wal_size            = 4GB
 
-# NVMe SSD settings (random_page_cost near 1.0 for SSD)
+# NVMe SSD
 random_page_cost        = 1.1
 effective_io_concurrency = 200
 seq_page_cost           = 1.0
 
 # Connections
 max_connections         = 200
-connection_throttling   = on
 
-# Logging (minimal for performance)
-log_min_duration_statement = 1000    # log queries > 1 second
+# Logging
+log_min_duration_statement = 1000
 log_checkpoints            = on
 log_lock_waits             = on
 
@@ -263,6 +260,7 @@ log_lock_waits             = on
 track_io_timing         = on
 track_functions         = all
 EOF
+fi
 
 # Allow local connections
 cat >> /etc/postgresql/16/main/pg_hba.conf << EOF

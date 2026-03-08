@@ -344,18 +344,7 @@ section "8. Python Dependencies"
 
 source $KAT_HOME/venv/bin/activate
 
-# TA-Lib — not in Ubuntu repos, must build from source
-TALIB_VERSION="0.4.0"
-cd /tmp
-wget -q "https://sourceforge.net/projects/ta-lib/files/ta-lib/${TALIB_VERSION}/ta-lib-${TALIB_VERSION}-src.tar.gz"
-tar -xzf ta-lib-${TALIB_VERSION}-src.tar.gz
-cd ta-lib/
-./configure --prefix=/usr
-make -j$(nproc)
-make install
-ldconfig
-cd /root
-log "TA-Lib C library built from source ✓"
+# TA-Lib replaced by pandas-ta (pure Python, no C build required)
 
 # Core
 pip install -q \
@@ -377,7 +366,6 @@ pip install -q \
     numpy pandas pyarrow \
     pandas-ta \
     polygon-api-client \
-    TA-Lib \
     mplfinance matplotlib
 
 # ML / AI — install PyTorch CPU (no GPU on EX63)

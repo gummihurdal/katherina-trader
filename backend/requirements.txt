@@ -1,12 +1,61 @@
+# KAT — Python Dependencies
+# ============================================================
+
+# Core API & Web
 fastapi>=0.109.0
 uvicorn>=0.27.0
-ibapi>=9.81.1
 httpx>=0.27.0
+pydantic>=2.5.0
+python-dotenv>=1.0.0
+
+# IBKR
+ibapi>=9.81.1
+
+# Database
 supabase>=2.3.0
 redis>=5.0.0
-python-dotenv>=1.0.0
-pydantic>=2.5.0
+
+# Scheduling
 APScheduler>=3.10.0
+
+# Notifications
 python-telegram-bot>=21.0
+
+# Data
 numpy>=1.26.0
 pandas>=2.1.0
+pandas-ta>=0.3.14b
+pyarrow>=15.0.0   # parquet support
+
+# ─── AI / ML CORE ────────────────────────────────────────────
+# PyTorch — deep learning backbone
+torch>=2.2.0
+torchvision>=0.17.0
+
+# Stable-Baselines3 — PPO implementation
+stable-baselines3>=2.3.0
+sb3-contrib>=2.3.0       # extra algorithms (RecurrentPPO, etc.)
+
+# Gymnasium — RL environment standard
+gymnasium>=0.29.0
+
+# ─── EXPERIMENT TRACKING ─────────────────────────────────────
+mlflow>=2.10.0
+
+# ─── OPTIONAL: LOCAL LLM (Llama 3 for signal analysis) ──────
+# llama-cpp-python>=0.2.56   # enable when Llama weights downloaded
+
+# ─── DATA PROVIDERS ──────────────────────────────────────────
+polygon-api-client>=1.13.0  # official Polygon.io Python SDK
+
+# ─── TECHNICAL ANALYSIS ──────────────────────────────────────
+TA-Lib>=0.4.28   # note: requires libta-lib system package
+                  # apt-get install libta-lib-dev
+
+# ─── VISUALIZATION (for local debugging) ─────────────────────
+mplfinance>=0.12.10
+matplotlib>=3.8.0
+
+# ─── TESTING ─────────────────────────────────────────────────
+pytest>=8.0.0
+pytest-asyncio>=0.23.0

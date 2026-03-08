@@ -1,6 +1,6 @@
 #!/bin/bash
 # ================================================================
-# KAT v3 — Hetzner AX41 Server Setup
+# KAT v3 — Hetzner EX63 Server Setup
 # Ubuntu 24.04 LTS
 #
 # RUN AS ROOT on a fresh server:
@@ -209,8 +209,8 @@ GRANT ALL PRIVILEGES ON DATABASE $DB_NAME TO $DB_USER;
 ALTER USER $DB_USER CREATEDB;
 EOF
 
-# ── PostgreSQL config — tuned for AX41 (8 cores, 64GB RAM) ───────
-# AX41 spec: AMD Ryzen 9 3900 (12 cores), 64GB RAM, 2x512GB NVMe
+# ── PostgreSQL config — tuned for EX63 (20 cores, 64GB DDR5) ───────
+# EX63 spec: Intel Core Ultra 7 265 (20 cores), 64GB DDR5, 2x1TB NVMe Gen4
 PG_CONF="/etc/postgresql/16/main/postgresql.conf"
 
 # Backup original
@@ -219,19 +219,19 @@ cp $PG_CONF ${PG_CONF}.orig
 cat >> $PG_CONF << 'EOF'
 
 # ── KAT ML Workload Tuning ─────────────────────────────────────────
-# Server: Hetzner AX41 — 12 cores, 64GB RAM, NVMe SSD
+# Server: Hetzner EX63 — 20 cores, 64GB DDR5, 2x1TB NVMe Gen4
 
 # Memory
 shared_buffers          = 16GB          # 25% of RAM
 effective_cache_size    = 48GB          # 75% of RAM
-work_mem                = 256MB         # per sort/hash operation
+work_mem                = 128MB         # per sort/hash — lower due to high parallelism
 maintenance_work_mem    = 2GB           # for VACUUM, CREATE INDEX
 huge_pages              = try
 
 # Parallelism (12 cores available)
-max_parallel_workers_per_gather = 6
-max_parallel_workers            = 12
-max_worker_processes            = 16
+max_parallel_workers_per_gather = 8
+max_parallel_workers            = 20
+max_worker_processes            = 24
 
 # WAL / Checkpointing
 wal_buffers             = 64MB
@@ -364,7 +364,7 @@ pip install -q \
     TA-Lib \
     mplfinance matplotlib
 
-# ML / AI — install PyTorch CPU (no GPU on AX41)
+# ML / AI — install PyTorch CPU (no GPU on EX63)
 pip install -q \
     torch torchvision --index-url https://download.pytorch.org/whl/cpu
 

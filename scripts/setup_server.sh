@@ -400,7 +400,7 @@ export PGPASSWORD="$DB_PASS"
 MIGRATIONS_DIR="$KAT_HOME/app/supabase/migrations"
 
 # Create schema inline (in case migrations aren't cloned yet)
-psql -h 127.0.0.1 -U $DB_USER -d $DB_NAME << 'EOSQL'
+sudo -u postgres psql -d $DB_NAME << 'EOSQL'
 
 -- ── Extensions ────────────────────────────────────────────────────
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
@@ -809,15 +809,15 @@ check kat-engine
 echo ""
 echo "  DATABASE:"
 if pg_isready -h 127.0.0.1 -U kat_db -d kat_production -q 2>/dev/null; then
-    TABLES=$(psql -h 127.0.0.1 -U kat_db -d kat_production -t -c \
+    TABLES=$(sudo -u postgres psql -d kat_production -t -c \
         "SELECT count(*) FROM information_schema.tables WHERE table_schema='public'" 2>/dev/null)
     echo "  ✅ PostgreSQL — $TABLES tables"
     
-    BARS=$(psql -h 127.0.0.1 -U kat_db -d kat_production -t -c \
+    BARS=$(sudo -u postgres psql -d kat_production -t -c \
         "SELECT count(*) FROM price_bars" 2>/dev/null | tr -d ' ')
     echo "  📊 price_bars: $BARS rows"
     
-    TRADES=$(psql -h 127.0.0.1 -U kat_db -d kat_production -t -c \
+    TRADES=$(sudo -u postgres psql -d kat_production -t -c \
         "SELECT count(*) FROM trades" 2>/dev/null | tr -d ' ')
     echo "  📈 trades: $TRADES rows"
 else

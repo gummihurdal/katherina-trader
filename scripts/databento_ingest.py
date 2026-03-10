@@ -32,8 +32,8 @@ for ds in DATASETS:
             inserted = 0
             for idx, row in df.iterrows():
                 cur.execute(
-                    "INSERT INTO price_bars (symbol,timeframe,timestamp,open,high,low,close,volume,source) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT (symbol,timeframe,timestamp) DO NOTHING",
-                    (symbol,"1d",idx.date(),float(row.get("open",0)),float(row.get("high",0)),float(row.get("low",0)),float(row.get("close",0)),int(row.get("volume",0)),"databento")
+                    "INSERT INTO price_bars (symbol,timespan,ts,open,high,low,close,volume) VALUES (%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT (symbol,timespan,ts) DO NOTHING",
+                    (symbol,"1d",idx,float(row.get("open",0)),float(row.get("high",0)),float(row.get("low",0)),float(row.get("close",0)),int(row.get("volume",0)))
                 )
                 inserted += cur.rowcount
             conn.commit()

@@ -28,12 +28,13 @@ from datetime import datetime
 from typing import Dict, List, Optional
 import mlflow
 import mlflow.pytorch
-from stable_baselines3.common.vec_env import SubprocVecEnv, VecNormalize
+import multiprocessing
+from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 
 logger = logging.getLogger("kat.trainer")
 
 CHECKPOINT_DIR = Path(os.getenv("KAT_CHECKPOINT_DIR", "/data/kat/checkpoints"))
-MLFLOW_URI = os.getenv("MLFLOW_TRACKING_URI", "http://localhost:5000")
+MLFLOW_URI = os.getenv("MLFLOW_TRACKING_URI", "file:///data/kat/models/mlflow")
 
 
 # ─── Training Configuration ───────────────────────────────────────────────────
@@ -104,8 +105,8 @@ class OfflineTrainer:
         resume_from: Optional[str] = None,
     ):
         """Run offline pre-training."""
-        from backend.ai.environment.trading_env import KATTradingEnv
-        from backend.ai.agent.kat_agent import create_kat_agent, make_callbacks
+        from ai.environment.trading_env import KATTradingEnv
+        from ai.agent.kat_agent import create_kat_agent, make_callbacks
 
         total_steps = total_steps or self.config.STAGE1_TOTAL_STEPS
         logger.info(f"Starting Stage 1: Offline pre-training ({total_steps:,} steps)")
@@ -126,7 +127,7 @@ class OfflineTrainer:
 
             # Build vectorized environment
             env_fns = self._make_env_fns(KATTradingEnv, train=True)
-            vec_env = SubprocVecEnv(env_fns)
+            vec_env = DummyVecEnv(env_fns)
             vec_env = VecNormalize(
                 vec_env, norm_obs=True, norm_reward=True,
                 clip_obs=10.0, clip_reward=10.0,
@@ -134,7 +135,7 @@ class OfflineTrainer:
 
             # Eval environment (held-out symbols / later time period)
             eval_env_fns = self._make_env_fns(KATTradingEnv, train=False)
-            eval_vec_env = SubprocVecEnv(eval_env_fns[:2])
+            eval_vec_env = DummyVecEnv(eval_env_fns[:2])
             eval_vec_env = VecNormalize(eval_vec_env, norm_obs=True, norm_reward=False)
 
             # Create or resume agent
@@ -199,7 +200,7 @@ class OfflineTrainer:
                 price_df = price_df.iloc[start : start + slice_size]
 
             def make_fn(pdf=price_df, sdf=signal_df):
-                from backend.ai.environment.trading_env import KATTradingEnv
+                from ai.environment.trading_env import KATTradingEnv
                 from stable_baselines3.common.monitor import Monitor
 
                 def _fn():
@@ -251,7 +252,7 @@ class PaperTradingLoop:
         self.checkpoint_dir = checkpoint_dir / "stage2"
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
-        from backend.ai.agent.kat_agent import AgentPerformanceTracker
+        from ai.agent.kat_agent import AgentPerformanceTracker
         self.tracker = AgentPerformanceTracker()
 
     def run_session(self, price_data: pd.DataFrame, signal_data: Optional[pd.DataFrame] = None):
@@ -259,7 +260,7 @@ class PaperTradingLoop:
         Run one paper trading session (one market day).
         Called by the scheduler at market open.
         """
-        from backend.ai.environment.trading_env import KATTradingEnv
+        from ai.environment.trading_env import KATTradingEnv
         from backend.ai.agent.kat_agent import create_kat_agent
 
         env = KATTradingEnv(
@@ -372,7 +373,7 @@ class KATTrainer:
 
     def stage1_pretrain(self, c2_strategy_ids: List[str] = None, resume_from: str = None) -> str:
         """Full Stage 1 offline pre-training pipeline."""
-        from backend.ai.data_ingestion.pipeline import DatasetBuilder
+        from ai.data_ingestion.pipeline import DatasetBuilder
 
         logger.info("═" * 60)
         logger.info("  KAT TRAINING — STAGE 1: OFFLINE PRE-TRAINING")
@@ -412,3 +413,11 @@ class KATTrainer:
     def print_graduation_status(self, loop: PaperTradingLoop):
         """Print current performance vs graduation targets."""
         print(loop.tracker.summary())
+
+
+# ─── Entry Point ───────────────────────────────────────────────────────────────
+
+if __name__ == "__main__":
+    multiprocessing.set_start_method("fork", force=True)
+    trainer = KATTrainer()
+    trainer.stage1_pretrain()

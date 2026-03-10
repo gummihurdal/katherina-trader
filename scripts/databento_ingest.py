@@ -5,7 +5,7 @@ DATABASE_URL = os.environ["DATABASE_URL"]
 END_DATE = "2025-03-01"
 
 DATASETS = [
-    {"dataset": "GLBX.MDP3", "symbols": ["ES.c.0","NQ.c.0","CL.c.0","GC.c.0","NG.c.0","ZB.c.0","6E.c.0","6J.c.0","RTY.c.0","SI.c.0"], "start": "2010-01-01", "desc": "CME Futures"},
+    {"dataset": "GLBX.MDP3", "symbols": ["ES.c.0","NQ.c.0","CL.c.0","GC.c.0","NG.c.0","ZB.c.0","6E.c.0","6J.c.0","RTY.c.0","SI.c.0"], "start": "2010-06-06", "desc": "CME Futures"},
     {"dataset": "IFEU.IMPACT", "symbols": ["BRN.c.0","WBS.c.0"], "start": "2018-01-01", "desc": "ICE Brent+WTI"},
 ]
 

@@ -405,7 +405,7 @@ class KATTradingEnv(gym.Env):
         proceeds = close_qty * price * (1 - self.transaction_cost)
         cost_basis = close_qty * self.position.entry_price
         pnl = proceeds - cost_basis
-        pnl_pct = pnl / cost_basis
+        pnl_pct = pnl / cost_basis if cost_basis != 0 else 0.0
 
         self.capital += proceeds
         hold_bars = self.current_step - self._position_open_step

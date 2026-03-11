@@ -54,16 +54,8 @@ wget -q -O /tmp/ibgateway_install.sh \
 
 chmod +x /tmp/ibgateway_install.sh
 
-# Silent install — accept all defaults with Enter presses
-expect << 'EOF'
-set timeout 180
-spawn /tmp/ibgateway_install.sh -c
-expect "Where should IB Gateway be installed?"
-send "\r"
-expect -re "Next|symlink|directory"
-send "\r"
-expect eof
-EOF
+# Silent install — pipe blank answers for all prompts
+echo -e "\n\n\n\n\n\n\n\n" | bash /tmp/ibgateway_install.sh -c
 
 echo "✓ IB Gateway installed → $GW_DIR"
 

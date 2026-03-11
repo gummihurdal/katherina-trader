@@ -19,7 +19,7 @@ IBKR_PORT="4001"          # 4001=live gateway, 4002=paper gateway
 
 # ── Paths ────────────────────────────────────────────────────────────
 IBC_DIR="/opt/ibc"
-GW_DIR="/opt/ibgateway"
+GW_DIR="/root/Jts/ibgateway/1037"    # IB Gateway actual default install path
 KAT_DIR="/root/katherina-trader/pharma"
 
 echo ""
@@ -54,14 +54,14 @@ wget -q -O /tmp/ibgateway_install.sh \
 
 chmod +x /tmp/ibgateway_install.sh
 
-# Silent install using expect
-expect << EOF
-set timeout 120
+# Silent install — accept all defaults with Enter presses
+expect << 'EOF'
+set timeout 180
 spawn /tmp/ibgateway_install.sh -c
 expect "Where should IB Gateway be installed?"
-send "$GW_DIR\n"
-expect "Create symlinks in the following directory?"
-send "\n"
+send "\r"
+expect -re "Next|symlink|directory"
+send "\r"
 expect eof
 EOF
 
@@ -127,7 +127,7 @@ sleep 2
 cd /opt/ibc
 bash /opt/ibc/gatewaystart.sh \
     /opt/ibc/config.ini \
-    /opt/ibgateway \
+    /root/Jts/ibgateway/1037 \
     latest \
     >> /var/log/kat_ibgateway.log 2>&1 &
 

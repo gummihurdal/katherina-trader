@@ -1,0 +1,10 @@
+# KAT Pharma — never commit these
+data/pdufa_events.db
+briefings/*.pdf
+briefings/*_analysis.json
+models/xgboost_pdufa.pkl
+logs/*.log
+active_trades.json
+__pycache__/
+*.pyc
+.env

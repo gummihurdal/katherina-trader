@@ -1,0 +1,29 @@
+# KAT Pharma Module — Python Dependencies
+# Install: pip install -r requirements.txt --break-system-packages
+
+# ── Core (always needed) ──────────────────────────────────────────────────────
+anthropic>=0.20.0          # Claude API for briefing doc analysis
+requests>=2.31.0           # HTTP client for all scrapers
+beautifulsoup4>=4.12.0     # HTML scraping
+lxml>=4.9.0                # HTML parser backend
+
+# ── ML (needed for XGBoost model) ────────────────────────────────────────────
+numpy>=1.24.0
+scikit-learn>=1.3.0
+xgboost>=2.0.0
+
+# ── PDF processing (briefing docs) ───────────────────────────────────────────
+pypdf>=3.0.0               # extract text from FDA briefing PDFs
+
+# ── IBKR execution ────────────────────────────────────────────────────────────
+ib_insync>=0.9.86          # IBKR TWS API (requires TWS or IB Gateway running)
+
+# ── Free market data ──────────────────────────────────────────────────────────
+yfinance>=0.2.28           # options chain approximation (free skew)
+
+# ── Optional: MLflow experiment tracking ─────────────────────────────────────
+mlflow>=2.8.0              # already used by KAT v3.0 main training loop
+
+# ── Optional: NLP for management sentiment ───────────────────────────────────
+# transformers>=4.35.0     # BERT-based sentiment (heavy, use only if needed)
+# torch>=2.0.0             # required by transformers

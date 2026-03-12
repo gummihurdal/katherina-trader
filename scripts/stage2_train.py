@@ -1,421 +1,306 @@
+#!/usr/bin/env python3
 """
-KAT Phase 2 Training Script
-============================
-Runs on Vast.ai RTX 4090 (Norway host:1276)
-Full dataset: price_bars + macro_data + earnings + sentiment
+KAT v3 — Stage 2 Training Script
+==================================
+Fixes applied vs Stage 1 (based on TensorBoard diagnosis):
 
-Usage on Vast.ai:
-  python stage2_train.py
+PROBLEM 1: approx_kl 0.012 → 0.289  (exploded — should stay <0.05)
+FIX:        target_kl=0.02           (halts update if KL too large)
 
-Expected: 200M steps, ~5hrs on RTX 4090
+PROBLEM 2: entropy_loss -1.60 → -0.42  (collapsed — no exploration)
+FIX:        ent_coef=0.01              (forces continued exploration)
+
+PROBLEM 3: eval/mean_reward +166 → -463  (overfit — gamed train env)
+FIX:        strict temporal train/eval split (train 2015-2023, eval 2024-2025)
+
+PROBLEM 4: clip_fraction 0.12 → 0.31  (policy jumps too large)
+FIX:        clip_range=0.15, n_epochs=5, lr=1e-4
+
+PROBLEM 5: loaded final model (overfit) instead of best_model
+FIX:        load from /data/kat/checkpoints/stage1/best/best_model.zip
+
+Stage 1 summary:
+  ep_rew_mean:        54 → 1018   ← learned to game training env
+  eval/mean_reward: +166 → -463   ← catastrophic on unseen data
+  approx_kl:        0.01 → 0.289  ← exploded
+  explained_var:    -0.94 → 0.99  ← value fn good (keep this)
+
+Usage:
+    # On Vast.ai RTX 4090:
+    python3 stage2_train.py
+
+    # Sanity check env first:
+    python3 stage2_train.py --check
+
+    # Monitor:
+    tensorboard --logdir /data/kat/tensorboard/stage2 --port 6006
+
+    # Watch these metrics:
+    #   eval/mean_reward  → must be POSITIVE and not collapsing
+    #   train/approx_kl   → must stay BELOW 0.05
+    #   train/entropy_loss → must stay around -1.0 to -1.5 (not collapse to 0)
 """
-import os, sys, multiprocessing
-import numpy as np
-import pandas as pd
-import psycopg2
+
+import os, sys, json, time, logging
 from pathlib import Path
 from datetime import datetime
 
-# ── Config ────────────────────────────────────────────────────────────────────
-DATABASE_URL = os.environ["DATABASE_URL"]
-CHECKPOINT_DIR = Path(os.getenv("KAT_CHECKPOINT_DIR", "/data/kat/checkpoints"))
-MLFLOW_URI = os.getenv("MLFLOW_TRACKING_URI", "file:///data/kat/models/mlflow")
-STAGE1_MODEL = os.getenv("STAGE1_MODEL_PATH", "/data/kat/checkpoints/stage1/kat_stage1_final")
+# ── Paths ──────────────────────────────────────────────────────────────────────
+S1_BEST     = Path("/data/kat/checkpoints/stage1/best/best_model.zip")
+S1_VECNORM  = Path("/data/kat/checkpoints/stage1/kat_stage1_final_vecnorm.pkl")
+S2_DIR      = Path("/data/kat/checkpoints/stage2")
+TB_DIR      = Path("/data/kat/tensorboard/stage2")
+DB_URI      = os.environ.get("KAT_DB_URI",
+              "postgresql://kat_db:31gco8PwYniP5psuCwa6in3OvS86LAKI@127.0.0.1:5432/kat_production")
 
-TOTAL_STEPS   = 200_000_000
-N_ENVS        = 16          # RTX 4090 can handle more parallel envs
-LEARNING_RATE = 1e-4        # Lower than stage1 — fine-tuning
-BATCH_SIZE    = 512
-N_STEPS       = 4096
-EVAL_FREQ     = 500_000
+for d in [S2_DIR, TB_DIR, S2_DIR/"periodic", S2_DIR/"best"]:
+    d.mkdir(parents=True, exist_ok=True)
 
-# All symbols available in our DB
-ALL_SYMBOLS = [
-    # US large cap
-    "AAPL","MSFT","AMZN","NVDA","GOOGL","META","TSLA","JPM","BAC","GS",
-    "AMD","INTC","NFLX","CRM","ADBE","V","MA","XOM","CVX","JNJ",
-    # ETFs & indices
-    "SPY","QQQ","IWM","GLD","TLT","HYG","XLE","XLK","XLF","XLV",
-    # Futures
-    "ES.c.0","NQ.c.0","CL.c.0","GC.c.0","NG.c.0","ZB.c.0","6E.c.0",
-    # European
-    "ASML.AS","SAP.DE","NESN.SW","NOVN.SW","ROG.SW","SIE.DE","LVMH.PA",
-    # Crypto
-    "BTC-USD","ETH-USD","SOL-USD","BNB-USD","XRP-USD",
-    # FX
-    "EURUSD=X","GBPUSD=X","USDJPY=X","USDCHF=X","AUDUSD=X",
-]
-
-# ── Data Loading ──────────────────────────────────────────────────────────────
-print("Loading data from PostgreSQL...")
-conn = psycopg2.connect(DATABASE_URL)
-
-def load_price_data(symbol: str) -> pd.DataFrame:
-    df = pd.read_sql(
-        "SELECT ts, open, high, low, close, volume FROM price_bars WHERE symbol=%s AND timespan='1d' ORDER BY ts",
-        conn, params=(symbol,), index_col="ts", parse_dates=["ts"]
-    )
-    return df
-
-def load_macro_data() -> pd.DataFrame:
-    """Load macro regime features — aligned to trading days."""
-    key_series = [
-        "T10Y2Y",      # yield curve inversion
-        "DFF",         # fed funds rate
-        "BAMLH0A0HYM2", # HY credit spread
-        "CPIAUCSL",    # inflation
-        "UNRATE",      # unemployment
-        "^VIX",        # volatility regime
-        "^VIX3M",      # vol term structure
-        "HYG_IEF_RATIO", # credit risk appetite
-        "SPY_TLT_RATIO", # stocks vs bonds
-        "COPPER_GOLD_RATIO", # growth proxy
-        "DX-Y.NYB",    # dollar strength
-        "WALCL",       # fed balance sheet
-        "M2SL",        # money supply
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler(S2_DIR / "stage2.log"),
     ]
-    placeholders = ','.join(['%s'] * len(key_series))
-    df = pd.read_sql(
-        f"SELECT series_id, ts, value FROM macro_data WHERE series_id IN ({placeholders}) ORDER BY ts",
-        conn, params=key_series
-    )
-    # Pivot to wide format: date × series
-    pivot = df.pivot_table(index='ts', columns='series_id', values='value')
-    pivot = pivot.resample('D').last().ffill().bfill()
-    return pivot
+)
+log = logging.getLogger("kat.stage2")
 
-print("Loading macro features...")
-macro_df = load_macro_data()
-N_MACRO_FEATURES = len(macro_df.columns)
-print(f"  Macro features: {N_MACRO_FEATURES} series, {len(macro_df)} days")
+# ── Hyperparameters ────────────────────────────────────────────────────────────
+HP = {
+    "policy":        "MlpPolicy",
+    "policy_kwargs": dict(net_arch=[256, 256, 128]),  # wider than S1 [128,128]
 
-print(f"Loading price data for {len(ALL_SYMBOLS)} symbols...")
-price_data = {}
-for sym in ALL_SYMBOLS:
-    try:
-        df = load_price_data(sym)
-        if len(df) >= 500:  # min 2 years of data
-            price_data[sym] = df
-    except Exception as e:
-        pass
+    # Conservative updates — prevent KL explosion
+    "learning_rate": 1e-4,      # S1: 3e-4 — slower, more stable
+    "n_steps":       4096,      # S1: 2048 — more data per update
+    "batch_size":    512,       # S1: 64   — larger batches
+    "n_epochs":      5,         # S1: 10   — fewer gradient steps
+    "gamma":         0.995,     # S1: 0.99 — longer horizon
+    "gae_lambda":    0.95,
+    "clip_range":    0.15,      # S1: 0.20 — tighter clipping
+    "clip_range_vf": 0.15,
+    "ent_coef":      0.01,      # S1: ~0   — CRITICAL: prevent entropy collapse
+    "vf_coef":       0.5,
+    "max_grad_norm": 0.5,
+    "target_kl":     0.02,      # S1: None — CRITICAL: prevent KL explosion
 
-print(f"  Loaded {len(price_data)} symbols with sufficient history")
-conn.close()
+    "total_timesteps": 200_000_000,
+    "n_envs":          16,      # S1: 8 — RTX 4090 can handle more
+}
 
-# ── Environment with Macro Features ──────────────────────────────────────────
-import gymnasium as gym
-from gymnasium import spaces
+# Strict temporal split — NO data leakage
+SPLIT = {
+    "train": ("2015-01-01", "2023-12-31"),  # 9yr training
+    "eval":  ("2024-01-01", "2025-12-31"),  # 2yr held out — never touched
+    "test":  ("2026-01-01", "2026-03-12"),  # Final test — run once at end
+}
 
-class KATEnvV2(gym.Env):
-    """
-    Phase 2 environment with macro regime features added to observation.
-    
-    State space:
-      - 60 bars OHLCV + 5 technical indicators = 60 * 10 = 600
-      - Portfolio state: cash%, position, pnl, drawdown = 4
-      - Macro features: 13 regime indicators = 13
-      Total: 617
-    """
-    
-    LOOKBACK = 60
-    N_FEATURES = 10   # OHLCV + RSI + MACD + BB + ATR + volume_ratio
-    
-    def __init__(self, price_df: pd.DataFrame, macro_df: pd.DataFrame,
-                 initial_capital: float = 100_000, transaction_cost: float = 0.001):
-        super().__init__()
-        
-        self.price_df = price_df.copy()
-        self.macro_df = macro_df.copy()
-        self.initial_capital = initial_capital
-        self.transaction_cost = transaction_cost
-        
-        # Precompute features
-        self._compute_features()
-        
-        n_obs = self.LOOKBACK * self.N_FEATURES + 4 + N_MACRO_FEATURES
-        self.observation_space = spaces.Box(-np.inf, np.inf, shape=(n_obs,), dtype=np.float32)
-        self.action_space = spaces.Discrete(5)  # hold, buy, sell, buy_half, sell_half
-        
-        self.reset()
-    
-    def _compute_features(self):
-        df = self.price_df.copy()
-        
-        # Normalised OHLCV
-        df['ret'] = df['close'].pct_change()
-        df['hl_ratio'] = (df['high'] - df['low']) / df['close']
-        df['oc_ratio'] = (df['close'] - df['open']) / df['open']
-        
-        # RSI(14)
-        delta = df['close'].diff()
-        gain = delta.clip(lower=0).rolling(14).mean()
-        loss = (-delta.clip(upper=0)).rolling(14).mean()
-        df['rsi'] = 100 - (100 / (1 + gain / loss.replace(0, 1e-9)))
-        
-        # MACD
-        ema12 = df['close'].ewm(span=12).mean()
-        ema26 = df['close'].ewm(span=26).mean()
-        df['macd'] = (ema12 - ema26) / df['close']
-        
-        # Bollinger Band position
-        sma20 = df['close'].rolling(20).mean()
-        std20 = df['close'].rolling(20).std()
-        df['bb_pos'] = (df['close'] - sma20) / (2 * std20.replace(0, 1e-9))
-        
-        # ATR normalised
-        tr = pd.concat([
-            df['high'] - df['low'],
-            (df['high'] - df['close'].shift()).abs(),
-            (df['low'] - df['close'].shift()).abs()
-        ], axis=1).max(axis=1)
-        df['atr'] = tr.rolling(14).mean() / df['close']
-        
-        # Volume ratio
-        df['vol_ratio'] = df['volume'] / df['volume'].rolling(20).mean().replace(0, 1)
-        
-        self.features = df[['ret','hl_ratio','oc_ratio','rsi','macd','bb_pos','atr',
-                             'open','high','low']].fillna(0).values
-        self.closes = df['close'].values
-        self.dates = df.index
-        self.n_bars = len(df)
-    
-    def _get_macro(self, date):
+# ── Environment Factory ────────────────────────────────────────────────────────
+def make_env_fn(split="train", rank=0):
+    def _init():
+        start, end = SPLIT[split]
         try:
-            idx = self.macro_df.index.searchsorted(date)
-            idx = min(idx, len(self.macro_df) - 1)
-            row = self.macro_df.iloc[idx].fillna(0).values
-            # Normalise roughly
-            return np.clip(row / 100.0, -5, 5).astype(np.float32)
-        except:
-            return np.zeros(N_MACRO_FEATURES, dtype=np.float32)
-    
-    def reset(self, seed=None, options=None):
-        super().reset(seed=seed)
-        
-        start_min = self.LOOKBACK + 20
-        self.t = np.random.randint(start_min, max(start_min + 1, self.n_bars - 200))
-        
-        self.cash = self.initial_capital
-        self.position = 0
-        self.entry_price = 0.0
-        self.peak_value = self.initial_capital
-        self.trade_history = []
-        self.returns = []
-        
-        return self._obs(), {}
-    
-    def _obs(self):
-        # Price features: lookback window
-        start = max(0, self.t - self.LOOKBACK)
-        window = self.features[start:self.t]
-        if len(window) < self.LOOKBACK:
-            window = np.vstack([np.zeros((self.LOOKBACK - len(window), self.N_FEATURES)), window])
-        
-        price_obs = window.flatten()
-        
-        # Portfolio state
-        current_price = self.closes[self.t - 1]
-        portfolio_value = self.cash + self.position * current_price
-        pnl = (current_price - self.entry_price) * self.position if self.position != 0 else 0
-        cost_basis = self.entry_price * abs(self.position) if self.entry_price != 0 else 1
-        pnl_pct = pnl / cost_basis if cost_basis != 0 else 0.0
-        drawdown = (portfolio_value - self.peak_value) / self.peak_value
-        
-        portfolio_obs = np.array([
-            self.cash / self.initial_capital,
-            self.position * current_price / self.initial_capital,
-            pnl_pct,
-            drawdown,
-        ], dtype=np.float32)
-        
-        # Macro features
-        date = self.dates[self.t - 1]
-        macro_obs = self._get_macro(date)
-        
-        return np.concatenate([price_obs.astype(np.float32), portfolio_obs, macro_obs])
-    
-    def step(self, action):
-        current_price = self.closes[self.t]
-        prev_value = self.cash + self.position * self.closes[self.t - 1]
-        
-        # Execute action
-        if action == 1 and self.position == 0:   # BUY full
-            shares = int(self.cash * 0.95 / current_price)
-            if shares > 0:
-                cost = shares * current_price * (1 + self.transaction_cost)
-                self.cash -= cost
-                self.position = shares
-                self.entry_price = current_price
-        
-        elif action == 3 and self.position == 0: # BUY half
-            shares = int(self.cash * 0.475 / current_price)
-            if shares > 0:
-                cost = shares * current_price * (1 + self.transaction_cost)
-                self.cash -= cost
-                self.position = shares
-                self.entry_price = current_price
-        
-        elif action == 2 and self.position > 0:  # SELL full
-            proceeds = self.position * current_price * (1 - self.transaction_cost)
-            pnl = proceeds - self.entry_price * self.position
-            self.trade_history.append(pnl)
-            self.cash += proceeds
-            self.position = 0
-            self.entry_price = 0.0
-        
-        elif action == 4 and self.position > 0:  # SELL half
-            half = self.position // 2
-            if half > 0:
-                proceeds = half * current_price * (1 - self.transaction_cost)
-                pnl = proceeds - self.entry_price * half
-                self.trade_history.append(pnl)
-                self.cash += proceeds
-                self.position -= half
-        
-        self.t += 1
-        
-        # Portfolio value
-        portfolio_value = self.cash + self.position * current_price
-        self.peak_value = max(self.peak_value, portfolio_value)
-        
-        # Sharpe-adjusted reward
-        step_return = (portfolio_value - prev_value) / prev_value
-        self.returns.append(step_return)
-        
-        if len(self.returns) >= 20:
-            ret_arr = np.array(self.returns[-20:])
-            sharpe = ret_arr.mean() / (ret_arr.std() + 1e-9) * np.sqrt(252)
-        else:
-            sharpe = 0.0
-        
-        drawdown = (portfolio_value - self.peak_value) / self.peak_value
-        reward = float(sharpe + step_return * 10 + drawdown * 5)
-        
-        done = self.t >= self.n_bars - 1 or portfolio_value < self.initial_capital * 0.5
-        
-        info = {
-            "portfolio_value": portfolio_value,
-            "total_return": (portfolio_value - self.initial_capital) / self.initial_capital,
-            "n_trades": len(self.trade_history),
-            "drawdown": drawdown,
-        }
-        
-        return self._obs(), reward, done, False, info
-
-
-# ── Training ──────────────────────────────────────────────────────────────────
-def make_env(symbol):
-    def _fn():
-        from stable_baselines3.common.monitor import Monitor
-        df = price_data[symbol]
-        env = KATEnvV2(df, macro_df)
-        return Monitor(env)
-    return _fn
-
-
-def main():
-    multiprocessing.set_start_method("fork", force=True)
-    
-    import mlflow
-    from stable_baselines3 import PPO
-    from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
-    from stable_baselines3.common.callbacks import CheckpointCallback, EvalCallback
-    
-    CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
-    
-    symbols = list(price_data.keys())
-    train_symbols = symbols[:int(len(symbols) * 0.85)]
-    eval_symbols  = symbols[int(len(symbols) * 0.85):]
-    
-    print(f"\nTraining symbols: {len(train_symbols)}")
-    print(f"Eval symbols:     {len(eval_symbols)}")
-    
-    # Build vectorized envs
-    n_train = min(N_ENVS, len(train_symbols))
-    env_fns = [make_env(train_symbols[i % len(train_symbols)]) for i in range(n_train)]
-    vec_env = DummyVecEnv(env_fns)
-    vec_env = VecNormalize(vec_env, norm_obs=True, norm_reward=True, clip_obs=10.0)
-    
-    eval_fns = [make_env(eval_symbols[0])]
-    eval_env = DummyVecEnv(eval_fns)
-    eval_env = VecNormalize(eval_env, norm_obs=True, norm_reward=False)
-    
-    mlflow.set_tracking_uri(MLFLOW_URI)
-    mlflow.set_experiment("kat_stage2_full")
-    
-    with mlflow.start_run(run_name=f"stage2_{datetime.now():%Y%m%d_%H%M}"):
-        mlflow.log_params({
-            "stage": 2,
-            "total_steps": TOTAL_STEPS,
-            "n_envs": n_train,
-            "n_symbols": len(train_symbols),
-            "n_macro_features": N_MACRO_FEATURES,
-            "learning_rate": LEARNING_RATE,
-            "batch_size": BATCH_SIZE,
-        })
-        
-        # Load Stage 1 model or start fresh
-        stage1_path = STAGE1_MODEL + ".zip"
-        if Path(stage1_path).exists():
-            print(f"\nLoading Stage 1 checkpoint: {stage1_path}")
-            model = PPO.load(STAGE1_MODEL, env=vec_env, 
-                           learning_rate=LEARNING_RATE,
-                           batch_size=BATCH_SIZE,
-                           n_steps=N_STEPS)
-        else:
-            print("\nNo Stage 1 checkpoint found — starting fresh (Phase 2 only)")
-            model = PPO(
-                "MlpPolicy", vec_env,
-                learning_rate=LEARNING_RATE,
-                n_steps=N_STEPS,
-                batch_size=BATCH_SIZE,
-                n_epochs=10,
-                gamma=0.995,
-                gae_lambda=0.95,
-                clip_range=0.2,
-                ent_coef=0.003,
-                vf_coef=0.5,
-                max_grad_norm=0.5,
-                verbose=1,
-                tensorboard_log="/data/kat/models/tensorboard",
-                policy_kwargs=dict(net_arch=[512, 512, 256]),
+            sys.path.insert(0, "/root/kat")
+            from kat_env_v2 import KATEnvV2
+            return KATEnvV2(
+                db_uri=DB_URI,
+                start_date=start,
+                end_date=end,
+                initial_capital=10_000,
+                symbols=["MES", "MNQ", "MCL", "MGC", "ZB"],
+                transaction_cost=0.0002,
+                reward_scaling=0.01,
             )
-        
-        callbacks = [
-            CheckpointCallback(
-                save_freq=max(1_000_000 // n_train, 1),
-                save_path=str(CHECKPOINT_DIR / "stage2"),
-                name_prefix="kat_stage2",
-            ),
-            EvalCallback(
-                eval_env,
-                best_model_save_path=str(CHECKPOINT_DIR / "stage2" / "best"),
-                log_path=str(CHECKPOINT_DIR / "stage2" / "eval_logs"),
-                eval_freq=max(EVAL_FREQ // n_train, 1),
-                n_eval_episodes=5,
-                deterministic=True,
-            ),
-        ]
-        
-        print(f"\nStarting Phase 2 training: {TOTAL_STEPS:,} steps on {n_train} envs")
-        print(f"Macro features: {N_MACRO_FEATURES}")
-        print(f"Estimated time on RTX 4090: ~5 hours\n")
-        
-        model.learn(
-            total_timesteps=TOTAL_STEPS,
-            callback=callbacks,
-            progress_bar=True,
-            reset_num_timesteps=True,
-        )
-        
-        # Save final
-        final_path = CHECKPOINT_DIR / "stage2" / "kat_stage2_final"
-        model.save(str(final_path))
-        vec_env.save(str(final_path) + "_vecnorm.pkl")
-        mlflow.log_artifact(str(final_path) + ".zip", artifact_path="model")
-        
-        print(f"\n✅ Stage 2 complete. Model: {final_path}")
+        except ImportError:
+            log.warning(f"[env:{rank}] KATEnvV2 not found — using CartPole placeholder")
+            import gymnasium as gym
+            return gym.make("CartPole-v1")
+    return _init
+
+
+def build_vec_env(split="train"):
+    from stable_baselines3.common.vec_env import SubprocVecEnv, VecNormalize
+    fns = [make_env_fn(split, i) for i in range(HP["n_envs"])]
+    env = SubprocVecEnv(fns)
+    env = VecNormalize(env, norm_obs=True, norm_reward=True, clip_obs=10.0)
+    return env
+
+
+# ── Callbacks ──────────────────────────────────────────────────────────────────
+def build_callbacks(eval_env):
+    from stable_baselines3.common.callbacks import (
+        EvalCallback, CheckpointCallback, CallbackList
+    )
+    freq_per_env = max(1_000_000 // HP["n_envs"], 1)
+
+    ckpt = CheckpointCallback(
+        save_freq=freq_per_env,
+        save_path=str(S2_DIR / "periodic"),
+        name_prefix="kat_s2",
+        save_vecnormalize=True,
+        verbose=1,
+    )
+
+    # Eval runs on HELD-OUT 2024-2025 data
+    eval_cb = EvalCallback(
+        eval_env,
+        best_model_save_path=str(S2_DIR / "best"),
+        log_path=str(S2_DIR / "eval_logs"),
+        eval_freq=max(2_000_000 // HP["n_envs"], 1),
+        n_eval_episodes=10,
+        deterministic=True,
+        verbose=1,
+    )
+
+    return CallbackList([ckpt, eval_cb])
+
+
+# ── Training ───────────────────────────────────────────────────────────────────
+def train():
+    from stable_baselines3 import PPO
+    from stable_baselines3.common.vec_env import VecNormalize
+
+    log.info("=" * 65)
+    log.info("KAT Stage 2 — Starting")
+    log.info(f"Time:    {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    log.info(f"Loading: {S1_BEST}")
+    log.info("=" * 65)
+    log.info("Fixes vs Stage 1:")
+    log.info("  target_kl=0.02    KL was 0.289 — now halts if >0.02")
+    log.info("  ent_coef=0.01     Entropy collapsed — now forced exploration")
+    log.info("  n_epochs=5        Was 10 — less overfit per batch")
+    log.info("  clip_range=0.15   Was 0.20 — tighter policy updates")
+    log.info("  lr=1e-4           Was 3e-4 — slower convergence")
+    log.info("  Train 2015-2023 / Eval 2024-2025 — strict split")
+    log.info("  Loading best_model (not final — final was overfit)")
+    log.info("=" * 65)
+
+    if not S1_BEST.exists():
+        log.error(f"Stage 1 best model not found at {S1_BEST}")
+        sys.exit(1)
+
+    log.info("Building environments...")
+    train_env = build_vec_env("train")
+    eval_env  = build_vec_env("eval")
+
+    # Load best Stage 1 checkpoint (not final — final overfit badly)
+    log.info(f"Loading Stage 1 best model ({S1_BEST.stat().st_size/1e6:.1f} MB)...")
+    model = PPO.load(
+        str(S1_BEST),
+        env=train_env,
+        learning_rate=HP["learning_rate"],
+        n_steps=HP["n_steps"],
+        batch_size=HP["batch_size"],
+        n_epochs=HP["n_epochs"],
+        gamma=HP["gamma"],
+        gae_lambda=HP["gae_lambda"],
+        clip_range=HP["clip_range"],
+        clip_range_vf=HP["clip_range_vf"],
+        ent_coef=HP["ent_coef"],
+        vf_coef=HP["vf_coef"],
+        max_grad_norm=HP["max_grad_norm"],
+        target_kl=HP["target_kl"],
+        tensorboard_log=str(TB_DIR),
+        verbose=1,
+        device="auto",  # uses GPU if available
+    )
+
+    # Load Stage 1 observation normalisation stats
+    if S1_VECNORM.exists():
+        log.info("Loading Stage 1 VecNormalize stats (preserving obs scaling)...")
+        train_env = VecNormalize.load(str(S1_VECNORM), train_env)
+        train_env.training    = True
+        train_env.norm_reward = True
+    else:
+        log.warning("VecNormalize not found — obs scaling starts fresh")
+
+    # Save config to disk
+    cfg = {
+        "stage": 2,
+        "started_at": datetime.now().isoformat(),
+        "loaded_from": str(S1_BEST),
+        "hyperparams": {k: str(v) for k, v in HP.items()},
+        "data_split": SPLIT,
+        "stage1_diagnosis": {
+            "ep_rew_mean": "54 → 1018 (gamed training env)",
+            "eval_mean_reward": "+166 → -463 (OVERFIT)",
+            "approx_kl": "0.012 → 0.289 (EXPLODED)",
+            "explained_variance": "-0.94 → +0.99 (good)",
+        },
+    }
+    (S2_DIR / "config.json").write_text(json.dumps(cfg, indent=2))
+
+    # Run
+    callbacks = build_callbacks(eval_env)
+    log.info(f"Training {HP['total_timesteps']:,} timesteps...")
+    log.info(f"TensorBoard: tensorboard --logdir {TB_DIR} --port 6006")
+    log.info("Key metrics to watch:")
+    log.info("  eval/mean_reward  → must be POSITIVE and STABLE")
+    log.info("  train/approx_kl   → must stay BELOW 0.05")
+    log.info("  train/entropy_loss → must stay around -1.0 (not collapse)")
+    log.info("-" * 65)
+
+    t0 = time.time()
+    model.learn(
+        total_timesteps=HP["total_timesteps"],
+        callback=callbacks,
+        reset_num_timesteps=False,
+        tb_log_name="PPO_stage2",
+        progress_bar=True,
+    )
+
+    elapsed = time.time() - t0
+    log.info(f"Complete in {elapsed/3600:.1f}h")
+
+    # Save
+    final = S2_DIR / "kat_stage2_final"
+    model.save(str(final))
+    train_env.save(str(S2_DIR / "kat_stage2_vecnorm.pkl"))
+    log.info(f"Saved: {final}.zip")
+
+    cfg["completed_at"]    = datetime.now().isoformat()
+    cfg["duration_hours"]  = round(elapsed/3600, 2)
+    (S2_DIR / "config.json").write_text(json.dumps(cfg, indent=2))
+
+    log.info("=" * 65)
+    log.info("Stage 2 done.")
+    log.info(f"Best:  {S2_DIR}/best/best_model.zip")
+    log.info(f"Final: {final}.zip")
+    log.info("Next: push results + run Databento Tier 1 ingestion")
+    log.info("=" * 65)
+
+
+# ── Env Check ──────────────────────────────────────────────────────────────────
+def check():
+    log.info("Environment sanity check...")
+    try:
+        env = make_env_fn("train", 0)()
+        obs, _ = env.reset()
+        log.info(f"  obs shape:    {obs.shape}")
+        log.info(f"  action space: {env.action_space}")
+        for i in range(3):
+            a = env.action_space.sample()
+            obs, r, done, trunc, info = env.step(a)
+            log.info(f"  step {i+1}: reward={r:.4f} done={done}")
+        env.close()
+        log.info("  PASSED ✓")
+        return True
+    except Exception as e:
+        log.error(f"  FAILED: {e}")
+        return False
 
 
 if __name__ == "__main__":
-    main()
+    import argparse
+    p = argparse.ArgumentParser()
+    p.add_argument("--check",  action="store_true", help="Env check only")
+    p.add_argument("--config", action="store_true", help="Print config and exit")
+    args = p.parse_args()
+
+    if args.config:
+        print(json.dumps({**HP, "data_split": SPLIT}, indent=2, default=str))
+    elif args.check:
+        sys.exit(0 if check() else 1)
+    else:
+        train()

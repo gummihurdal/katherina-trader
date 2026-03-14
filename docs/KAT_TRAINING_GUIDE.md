@@ -358,3 +358,50 @@ nohup python3 /kat_monitor.py > /tmp/monitor.log 2>&1 &
 11. **reward_scaling=0.1 + no inaction penalty** — cleanest training signal
 12. **Telegram monitor checks every 15s** — eval notifications + hourly updates
 
+
+---
+
+## Research Foundation
+
+### Key Papers Studied
+
+#### 1. PPO for LLMs (Cameron Wolfe, 2025)
+Key insight for KAT: The **advantage function** is what drives learning. If the value function V(s)=0 for all states (which happens when policy always HOLDs), the advantage A(s,a) = Q(s,a) - V(s) never signals that trading is better. Fix: remove transaction costs so trading has positive expected value.
+
+#### 2. Unpacking DPO and PPO (Allen Institute / UW, 2024)
+Key finding: **Data quality matters more than algorithm choice**. Better market data (options chains, IV surface) will improve KAT more than switching from PPO to A2C or GRPO. PPO outperforms DPO by 2.5% — confirms our algorithm choice is correct.
+
+#### 3. PPO and GRPO Introduction (TDS, 2025)
+Key insight: **GRPO eliminates the critic/value network** by comparing multiple actions' rewards relative to each other. This directly solves the dead policy problem — the model learns what's *relatively better* rather than needing absolute positive rewards. Recommended for Stage 4.
+
+#### 4. PPO Fundamentals (GeeksforGeeks, 2025)
+Confirms our parameter choices:
+- `ent_coef=0.02` — prevents entropy collapse (overconfident HOLD policy)
+- `clip_range=0.15` — controls policy deviation per update
+- `target_kl=0.02` — prevents large destabilizing updates
+- `gamma=0.995` — values future rewards appropriately
+
+### Algorithm Roadmap Based on Research
+
+| Stage | Algorithm | Why |
+|-------|-----------|-----|
+| Stage 3 | PPO + KATPolicy | Stable, proven, handles discrete actions |
+| Stage 4 | GRPO | No critic needed, eliminates dead policy, relative reward comparison |
+| Stage 5 | Ensemble PPO + GRPO | Best of both |
+
+### Critical Insight: Why transaction_cost Must Be 0.0
+
+With `transaction_cost=0.0002`:
+- Every trade starts with reward = -0.04 (transaction penalty)
+- Value function learns V(s) = 0 for all states (HOLD is safe)
+- Advantage A(BUY) = -0.04 - 0 = negative → model learns BUY is bad
+- Dead policy emerges — HOLD forever
+
+With `transaction_cost=0.0`:
+- Trades start with reward = actual P&L
+- Value function learns real market dynamics
+- Advantage correctly signals when trading is profitable
+- Model learns to trade when expected P&L > 0
+
+**Always use `transaction_cost=0.0` when broker has 0% commission.**
+

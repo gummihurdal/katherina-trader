@@ -30,10 +30,12 @@ from gymnasium import spaces
 import gymnasium as gym
 
 # ── Stream Dimensions (must match feature_pipeline.py) ───────────────────────
+# Verified from smoke test: total obs = 1770
+# macro=1404, portfolio=108, futures=150, technical=108
 MACRO_DIM       = 1404
 PORTFOLIO_DIM   = 108
-FUTURES_DIM     = 210
-TECHNICAL_DIM   = 150
+FUTURES_DIM     = 150   # 6 contracts x 25 OHLCV features
+TECHNICAL_DIM   = 108   # 6 contracts x 18 technical indicators
 HIDDEN_DIM      = 256
 N_HEADS         = 8
 

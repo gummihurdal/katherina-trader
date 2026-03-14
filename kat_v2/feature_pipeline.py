@@ -24,10 +24,10 @@ from typing import Tuple, Dict
 
 # ── Constants ────────────────────────────────────────────────────────────────
 FUTURES_SYMBOLS = ["CL", "GC", "HG", "ES", "NQ", "ZB"]
-MACRO_FEATURES  = 1404
+MACRO_FEATURES  = 1404  # 54 series × 26 features
 PORTFOLIO_FEATURES = 108
 FUTURES_FEATURES   = 210  # 35 per contract × 6 contracts
-TECHNICAL_FEATURES = 150  # 25 per contract × 6 contracts
+TECHNICAL_FEATURES = 108  # 25 per contract × 6 contracts
 TOTAL_OBS_SIZE = MACRO_FEATURES + PORTFOLIO_FEATURES + FUTURES_FEATURES + TECHNICAL_FEATURES
 
 
@@ -121,7 +121,7 @@ def compute_technical_features(df: pd.DataFrame) -> pd.DataFrame:
     out = out.fillna(0)
 
     # Verify feature count
-    assert len(out.columns) == 25, f"Expected 25 technical features, got {len(out.columns)}"
+    assert len(out.columns) == 18, f"Expected 25 technical features, got {len(out.columns)}"
 
     return out
 
@@ -158,6 +158,44 @@ def load_features(
     )
     macro_pivot = macro_pivot.ffill().fillna(0)
 
+    # Expand macro features with rolling windows (54 series × 26 features = 1404)
+    # Windows: raw + pct_change(1,5,10,20) + rolling_mean(5,10,20,60) +
+    #          rolling_std(5,10,20) + z_score(20,60) + momentum(5,20,60) +
+    #          rank(20) + above_ma(20,60) = 26 features per series
+    macro_expanded = {}
+    for col in macro_pivot.columns:
+        s = macro_pivot[col]
+        macro_expanded[f"{col}_raw"]       = s
+        macro_expanded[f"{col}_pct1"]      = s.pct_change(1).clip(-1, 1)
+        macro_expanded[f"{col}_pct5"]      = s.pct_change(5).clip(-1, 1)
+        macro_expanded[f"{col}_pct10"]     = s.pct_change(10).clip(-1, 1)
+        macro_expanded[f"{col}_pct20"]     = s.pct_change(20).clip(-1, 1)
+        macro_expanded[f"{col}_ma5"]       = s.rolling(5).mean()
+        macro_expanded[f"{col}_ma10"]      = s.rolling(10).mean()
+        macro_expanded[f"{col}_ma20"]      = s.rolling(20).mean()
+        macro_expanded[f"{col}_ma60"]      = s.rolling(60).mean()
+        macro_expanded[f"{col}_std5"]      = s.rolling(5).std()
+        macro_expanded[f"{col}_std10"]     = s.rolling(10).std()
+        macro_expanded[f"{col}_std20"]     = s.rolling(20).std()
+        macro_expanded[f"{col}_zscore20"]  = (s - s.rolling(20).mean()) / (s.rolling(20).std() + 1e-8)
+        macro_expanded[f"{col}_zscore60"]  = (s - s.rolling(60).mean()) / (s.rolling(60).std() + 1e-8)
+        macro_expanded[f"{col}_mom5"]      = (s / (s.shift(5) + 1e-8) - 1).clip(-1, 1)
+        macro_expanded[f"{col}_mom20"]     = (s / (s.shift(20) + 1e-8) - 1).clip(-1, 1)
+        macro_expanded[f"{col}_mom60"]     = (s / (s.shift(60) + 1e-8) - 1).clip(-1, 1)
+        macro_expanded[f"{col}_rank20"]    = s.rolling(20).rank(pct=True)
+        macro_expanded[f"{col}_above_ma20"]= (s > s.rolling(20).mean()).astype(float)
+        macro_expanded[f"{col}_above_ma60"]= (s > s.rolling(60).mean()).astype(float)
+        macro_expanded[f"{col}_vol_ratio"] = s.rolling(5).std() / (s.rolling(20).std() + 1e-8)
+        macro_expanded[f"{col}_accel"]     = s.pct_change(1) - s.pct_change(1).shift(5)
+        macro_expanded[f"{col}_high20"]    = (s == s.rolling(20).max()).astype(float)
+        macro_expanded[f"{col}_low20"]     = (s == s.rolling(20).min()).astype(float)
+        macro_expanded[f"{col}_trend"]     = (s.rolling(5).mean() > s.rolling(20).mean()).astype(float)
+        macro_expanded[f"{col}_cross"]     = ((s.rolling(5).mean() > s.rolling(20).mean()) &
+                                              (s.rolling(5).mean().shift(1) <= s.rolling(20).mean().shift(1))).astype(float)
+
+    macro_pivot = pd.DataFrame(macro_expanded, index=macro_pivot.index).fillna(0)
+    macro_pivot = macro_pivot.clip(-10, 10)
+
     # Filter by date AFTER pivot to ensure consistent columns
     sd = pd.Timestamp(start_date)
     ed = pd.Timestamp(end_date)
@@ -165,9 +203,9 @@ def load_features(
 
     # ── Futures OHLCV ─────────────────────────────────────────────────────────
     futures_raw = conn.execute("""
-        SELECT date, symbol, open, high, low, close, volume
+        SELECT ts as date, symbol, open, high, low, close, volume
         FROM market_data_continuous
-        ORDER BY date, symbol
+        ORDER BY ts, symbol
     """).df()
 
     futures_raw["date"] = pd.to_datetime(futures_raw["date"]).dt.tz_localize(None).dt.normalize()

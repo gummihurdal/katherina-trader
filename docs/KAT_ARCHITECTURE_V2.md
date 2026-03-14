@@ -970,3 +970,39 @@ Despite A2C's strong trading performance, PPO is selected for Stage 3 for concre
 
 **Conclusion:** PPO for training stability in Stage 3. A2C in parallel from Stage 5 for ensemble deployment. Both are correct — for different phases of the pipeline.
 
+
+
+---
+
+## 15. v2.0 Launch Notes — March 14, 2026
+
+### What Was Built
+- `feature_pipeline.py` — DuckDB loader + 18 technical indicators per contract (108 total)
+- `kat_env_v2.py` — Clean environment with position caps and reward clipping
+- `kat_policy_v2.py` — 4-stream attention (macro/portfolio/futures/technical)
+- `stage3_launch_v2.py` — PPO with research-backed hyperparameters
+- `migrate_to_duckdb.py` — One-time PostgreSQL → DuckDB migration
+
+### Confirmed Obs Space
+```
+macro:     1404 features (54 FRED series × 26 rolling features)
+portfolio:  108 features (equity, position, drawdown, trades)
+futures:    150 features (6 contracts × 25 OHLCV features)
+technical:  108 features (6 contracts × 18 indicators)
+total:     1770 features
+```
+
+### Critical Launch Command
+```bash
+OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 \
+KAT_DB_PATH=/data/kat/kat_v2.db \
+nohup python3 /root/kat_v2/stage3_launch_v2.py > /tmp/stage3_v2.log 2>&1 &
+```
+Without OPENBLAS_NUM_THREADS=1, 96 workers crash the OS with 6144 threads.
+
+### First Results
+- Positive eval reward at 4M steps (0.066)  
+- FPS: ~5,000 (2x faster than v1.0)
+- Reward explosion fixed with position cap + reward clipping
+- Dead policy eliminated with transaction_cost=0.0
+

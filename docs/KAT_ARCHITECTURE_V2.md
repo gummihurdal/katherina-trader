@@ -846,3 +846,127 @@ Implementation:
 | N_envs? | **96** | ~75-80% CPU target |
 | When to go live? | **After paper trading** | Sharpe >1.2, win rate >60%, 3 months paper |
 
+
+---
+
+## 14. Algorithm Selection Revision — PPO + A2C Ensemble
+
+### 14.1 Research Update: The A2C vs PPO Question
+
+Following a systematic review of 8 additional trading-specific studies (2024-2026), the algorithm selection has been revised from PPO-only to a **PPO + A2C Ensemble** strategy. This section documents the evidence and rationale.
+
+### 14.2 Empirical Evidence Summary
+
+| Study | Dataset | Winner | Metric | Notes |
+|-------|---------|--------|--------|-------|
+| Springer Nature (2025) | A-share market | **A2C > PPO** | Returns | Portfolio optimization |
+| CSCE-ICAI (2024) | Multi-stock | **A2C > PPO** | Cumulative rewards | 5-algorithm comparison |
+| FinRL Ensemble (2024) | DJIA | **PPO > A2C** | Annual return 15%, Sharpe | Trend-following |
+| Springer/ICDTA (2026) | Financial markets | **PPO > A2C** | Profit + risk management | Comprehensive comparison |
+| SN Computer Science (2025) | S&P500 pairs | **A2C ≈ PPO** | Sharpe 0.42 vs 0.41 | Statistically tied |
+| Hanlon FSC (2025) | DJIA | SAC > PPO > **A2C lowest** | Annual + cumulative | Bear market regime issue |
+| Smart Tangency (2025) | ETFs + DJIA | **Ensemble wins** | Sharpe ratio | PPO+A2C together best |
+| CSCE-ICAI behavior analysis | Stocks | A2C conservative | Trade frequency | A2C holds longer |
+
+### 14.3 Key Behavioral Differences — Critical for KAT
+
+The research reveals a critical behavioral distinction that directly informs deployment strategy:
+
+**PPO behavioral profile:**
+- Higher trade frequency — more active, more aggressive
+- Better performance in bull/trending markets
+- Higher annual returns in uptrending environments
+- Shorter average holding periods
+- Higher maximum purchase quantities (~1700 shares)
+
+**A2C behavioral profile:**
+- Lower trade frequency — more conservative, patient
+- Better performance in bear/volatile markets
+- Better capital preservation during drawdowns
+- Longer average holding periods
+- Lower maximum purchase quantities (~400 shares)
+- Higher cumulative rewards in choppy/sideways markets
+
+**Insight for KAT:** Neither algorithm dominates across all market regimes. This is the fundamental justification for the ensemble approach — deploy the algorithm best suited to the current market regime.
+
+### 14.4 The Ensemble Strategy — Research Validated
+
+The FinRL paper (2024) demonstrates the ensemble approach on DJIA:
+
+```
+Training: PPO, A2C, DDPG trained independently on same data
+Validation: 3-month rolling Sharpe ratio comparison
+Deployment: Select best-performing agent each quarter
+
+Results:
+- PPO alone:     15.0% annual return, Sharpe 0.83
+- A2C alone:     lower returns, better bear market
+- DDPG alone:    similar to PPO
+- ENSEMBLE:      outperforms ALL individual agents
+```
+
+### 14.5 KAT Ensemble Implementation Plan
+
+```python
+# Ensemble decision logic (Stage 5)
+class KATEnsemble:
+    """
+    Deploys PPO or A2C based on rolling Sharpe ratio comparison.
+    Rebalances monthly during paper trading, quarterly in live trading.
+    """
+    def __init__(self, ppo_model, a2c_model, window=60):
+        self.models = {'ppo': ppo_model, 'a2c': a2c_model}
+        self.active = 'ppo'  # default
+        self.window = window  # days for Sharpe calculation
+        self.sharpe_history = {'ppo': [], 'a2c': []}
+    
+    def select_active_model(self):
+        """Select model with higher rolling Sharpe ratio."""
+        if len(self.sharpe_history['ppo']) < self.window:
+            return  # not enough data yet
+        
+        ppo_sharpe = self._rolling_sharpe('ppo')
+        a2c_sharpe = self._rolling_sharpe('a2c')
+        
+        prev_active = self.active
+        self.active = 'ppo' if ppo_sharpe >= a2c_sharpe else 'a2c'
+        
+        if self.active != prev_active:
+            self._send_telegram(
+                f"🔄 KAT Ensemble Switch: {prev_active.upper()} → {self.active.upper()}\n"
+                f"PPO Sharpe: {ppo_sharpe:.3f}\n"
+                f"A2C Sharpe: {a2c_sharpe:.3f}"
+            )
+    
+    def predict(self, obs):
+        """Get action from active model."""
+        return self.models[self.active].predict(obs, deterministic=True)
+```
+
+### 14.6 Revised Stage Roadmap with Ensemble
+
+| Stage | Algorithm | Parallel? | Purpose |
+|-------|-----------|----------|---------|
+| Stage 3 | PPO only | — | Stable baseline, validate infrastructure |
+| Stage 4 | GRPO | — | Eliminate dead policy structurally |
+| Stage 5a | PPO v2 | Server 1+2 | Full data, retrain from scratch |
+| Stage 5b | A2C | Server 3+4 | Parallel training, same data |
+| Paper trading | **Ensemble** | Both running | Monthly Sharpe-based selection |
+| Live trading | **Ensemble** | Both running | Quarterly rebalancing |
+
+**Cost of running both:** 4-server cluster runs PPO on 2 servers and A2C on 2 servers simultaneously. Total cost unchanged (~$25 per 500M step run). Result: two fully trained models for the price of one.
+
+### 14.7 Why Not A2C Alone for Stage 3
+
+Despite A2C's strong trading performance, PPO is selected for Stage 3 for concrete operational reasons:
+
+1. **No target_kl in A2C:** The `target_kl` safety mechanism is PPO-specific. In our noisy financial environment with stochastic rewards, A2C is significantly more prone to policy collapse. We experienced this problem repeatedly in v1.0.
+
+2. **Training instability:** A2C's policy gradient updates are not clipped. Without PPO's clipping mechanism, large gradient updates can catastrophically damage the policy — especially early in training when the value function is poorly calibrated.
+
+3. **Dead policy risk same as PPO:** Both A2C and PPO use a critic (value function). The dead policy problem (V(HOLD)=0 > V(TRADE)) affects both equally. A2C does NOT solve the dead policy problem — it just converges to higher returns once it gets past the dead policy phase.
+
+4. **Once trained, A2C is excellent:** The research consistently shows A2C performs well *after convergence*. The challenge is getting it to converge. PPO's stability mechanisms make Stage 3 significantly more likely to succeed.
+
+**Conclusion:** PPO for training stability in Stage 3. A2C in parallel from Stage 5 for ensemble deployment. Both are correct — for different phases of the pipeline.
+

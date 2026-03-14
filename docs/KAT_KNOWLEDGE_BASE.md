@@ -465,3 +465,54 @@ transaction_cost  = 0.0     # SNB = 0% commission, eliminates dead policy
 4. **RLHF Book** — Nathan Lambert (https://rlhfbook.com) — PPO + GRPO deep dive
 5. **Lilian Weng's blog** — Policy Gradient Algorithms (https://lilianweng.github.io)
 
+
+---
+
+## 14. v2.0 Implementation Lessons — March 14, 2026
+
+### Critical Operational Findings
+
+**1. OPENBLAS_NUM_THREADS=1 is mandatory**
+96 parallel environments × default 64 OpenBLAS threads = 6,144 threads.
+Linux default process limit causes crash. Always launch with:
+```bash
+OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1
+```
+
+**2. DuckDB column naming**
+The `market_data_continuous` table uses `ts` not `date`.
+Always use `SELECT ts as date` when querying.
+
+**3. Reward explosion prevention**
+The ADD action (add 50% to position) can compound without limit.
+Must clip position and reward:
+```python
+self._position = np.clip(self._position, -3.0, 3.0)
+pnl_return = np.clip(pnl_return, -1.0, 1.0)
+```
+
+**4. Always kill competing processes**
+Two training processes competing for GPU = corrupted training.
+Before every launch: `pgrep -a python3 | grep stage3` and kill old ones.
+
+**5. Binary log file**
+If `grep` shows "binary file matches", a competing process is writing
+non-text to the log. Kill all processes and start fresh with new log file.
+
+### v2.0 Performance vs v1.0
+
+| Metric | v1.0 | v2.0 | Improvement |
+|--------|------|------|-------------|
+| FPS | ~2,400 | ~5,000 | +108% |
+| First positive reward | Never reliably | 1.5M steps | ∞ |
+| Policy params | 1.88M | 2.94M | +57% |
+| Technical indicators | 0 | 108 features | New |
+| Dead policy problem | Persistent | Solved (tx_cost=0) | Fixed |
+| Reward explosions | Occasional | Fixed (clipping) | Fixed |
+
+### The transaction_cost=0.0 Fix — Confirmed Working
+The single most impactful change in v2.0. All 6 research papers
+predicted this would solve the dead policy. Confirmed:
+- v1.0: reward stuck at 0.00 for millions of steps
+- v2.0: positive reward at 1.5M steps on first clean run
+
